@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '23 6 * * 1' # weekly: catch breakage against new cull releases
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / ${{ matrix.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13, windows-latest]
+        version: [latest]
+        include:
+          - os: ubuntu-latest
+            version: '0.12.0'
+          - os: windows-latest
+            version: 'v0.12.0'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup-cull (local action)
+        id: setup
+        uses: ./
+        with:
+          version: ${{ matrix.version }}
+
+      - name: cull is on PATH and runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cull --version
+          echo "resolved: ${{ steps.setup.outputs.version }}"
+
+      - name: select + text
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(printf '<html><body><h1>Hello CI</h1></body></html>' | cull h1 -t)
+          [ "$out" = "Hello CI" ]
+
+      - name: shaped JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(printf '<ul><li><a href="/a">A</a></li><li><a href="/b">B</a></li></ul>' \
+            | cull li -j '{t: a, u: a @href}' --base https://x.test | tr -d '\r')
+          expected=$(printf '%s\n%s' '{"t":"A","u":"https://x.test/a"}' '{"t":"B","u":"https://x.test/b"}')
+          [ "$out" = "$expected" ] || { echo "got: $out"; exit 1; }
+
+      - name: count mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '<p></p><p></p>' > page.html
+          n=$(cull p -c page.html)
+          [ "$n" = "2" ]
+
+      - name: pinned version resolves exactly
+        if: matrix.version != 'latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cull --version | grep -F "0.12.0"

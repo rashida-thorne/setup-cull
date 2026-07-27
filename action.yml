@@ -1,0 +1,92 @@
+name: 'Setup cull'
+description: 'Install cull — jq for HTML/XML: CSS selectors in, shaped JSON/CSV/Markdown/text out. Linux, macOS, and Windows.'
+author: 'Rashida Thorne'
+branding:
+  icon: 'scissors'
+  color: 'purple'
+
+inputs:
+  version:
+    description: 'Version of cull to install (e.g. "0.12.0", "v0.12.0", or "latest").'
+    required: false
+    default: 'latest'
+  github-token:
+    description: 'GitHub token used for the release-lookup API call and download (avoids rate limits).'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  version:
+    description: 'The resolved version that was installed (e.g. "v0.12.0").'
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: install
+      shell: bash
+      env:
+        CULL_VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        repo="rashida-thorne/cull"
+
+        # --- resolve version ---------------------------------------------
+        version="$CULL_VERSION"
+        auth=()
+        [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+        if [ "$version" = "latest" ]; then
+          version="$(curl -fsSL "${auth[@]}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$repo/releases/latest" \
+            | tr -d '\r' | sed -n 's/^ *"tag_name": *"\(.*\)",*$/\1/p' | head -n1)"
+          if [ -z "$version" ]; then
+            echo "::error::could not resolve latest release of $repo" >&2
+            exit 1
+          fi
+        fi
+        case "$version" in v*) ;; *) version="v$version" ;; esac
+        echo "installing cull $version"
+
+        # --- pick target triple ------------------------------------------
+        ext="tar.gz"
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64)     target="x86_64-unknown-linux-musl" ;;
+          Linux-ARM64)   target="aarch64-unknown-linux-musl" ;;
+          macOS-X64)     target="x86_64-apple-darwin" ;;
+          macOS-ARM64)   target="aarch64-apple-darwin" ;;
+          Windows-X64)   target="x86_64-pc-windows-msvc"; ext="zip" ;;
+          *)
+            echo "::error::unsupported platform: $RUNNER_OS-$RUNNER_ARCH" >&2
+            exit 1 ;;
+        esac
+
+        # --- download + extract ------------------------------------------
+        name="cull-$version-$target"
+        url="https://github.com/$repo/releases/download/$version/$name.$ext"
+        tmp="${RUNNER_TEMP:-/tmp}/setup-cull"
+        mkdir -p "$tmp"
+        echo "downloading $url"
+        curl -fsSL --retry 3 "${auth[@]}" -o "$tmp/$name.$ext" "$url"
+
+        if [ "$ext" = "zip" ]; then
+          if command -v unzip >/dev/null 2>&1; then
+            unzip -qo "$tmp/$name.$ext" -d "$tmp"
+          else
+            python -m zipfile -e "$tmp/$name.$ext" "$tmp"
+          fi
+        else
+          tar -xzf "$tmp/$name.$ext" -C "$tmp"
+        fi
+
+        bindir="$tmp/$name"
+        if [ ! -e "$bindir/cull" ] && [ ! -e "$bindir/cull.exe" ]; then
+          echo "::error::archive did not contain expected directory $name" >&2
+          exit 1
+        fi
+        chmod +x "$bindir/cull" 2>/dev/null || true
+
+        echo "$bindir" >> "$GITHUB_PATH"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "cull $version installed to $bindir"
